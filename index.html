@@ -1326,12 +1326,13 @@ function showPoster(){
 $('btn-poster').addEventListener('click', showPoster);
 $('btn-poster-close').addEventListener('click', () => $('poster-wrap').classList.remove('show'));
 $('btn-poster-dl').addEventListener('click', () => {
+  track('poster', 'download');
   try{
     const a = document.createElement('a');
     a.href = $('poster-canvas').toDataURL('image/png');
     a.download = '月亮邮局-' + (current ? current.id : 'moomail') + '.png';
     document.body.appendChild(a); a.click(); a.remove();
-  }catch(e){ $('poster-hint').textContent = '请长按上方图片保存'; }
+  }catch(e){ track('poster', 'fallback'); $('poster-hint').textContent = '请长按上方图片保存'; }
 });
 
 /* ---------- 交互绑定 ---------- */
