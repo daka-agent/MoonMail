@@ -1487,6 +1487,11 @@ SCENE_HOOKS.stamp = function(){
   s.classList.remove('drop');
   s.classList.add('hold');
   void s.offsetWidth;
+  /* 第二次进幕必须把按钮恢复成「按 下 月 戳」：
+     上一轮把"文案立刻变已落章"当成唯一的即时反馈信号，若文案不复位，
+     第二次进来它一开头就写着「已 落 章」，按下去画面毫无变化 —— 主观上就是"点了没反应"。 */
+  try{ const b = $('btn-stamp'); if(b) b.textContent = '按 下 月 戳'; }catch(e){}
+  try{ stampAt = 0; }catch(e){}
   try{ PCMSnd.warm(['tap', 'stamp']); }catch(e){}   /* 一进幕就把这两个音算好，按下那刻不再现算 */
   try{ PCMSnd.prime('tap'); }catch(e){}             /* 近零音量真播一次，焐热音频管道（鸿蒙首次出声开销） */
   say('stamp-bubble', dailyPick(CONTENT.rabbit.stamp, 4));
@@ -1501,7 +1506,8 @@ function pressStamp(){
 
   // 1) 同步：先让"按到了"这件事在画面上成立（改文字是纯 DOM，再卡也会显示）
   try{ const b = $('btn-stamp'); if(b) b.textContent = '已 落 章'; }catch(e){}
-  try{ const s = $('seal-big'); if(s){ s.classList.remove('hold'); s.classList.add('drop'); } }catch(e){}
+  /* 先清干净再落：不管上一次留下的是 hold 还是 drop，都强制回流重播一次，动画不许"第二次就不演了" */
+  try{ const s = $('seal-big'); if(s){ s.classList.remove('hold'); s.classList.remove('drop'); void s.offsetWidth; s.classList.add('drop'); } }catch(e){}
   try{
     const st = document.querySelector('#scene-stamp .stamp-stage');
     if(st){ st.classList.remove('jolt'); void st.offsetWidth; st.classList.add('jolt');
