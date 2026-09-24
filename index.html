@@ -330,6 +330,11 @@ input,textarea{user-select:text;-webkit-user-select:text}
   .title{font-size:clamp(26px,7vw,34px)}
   .lede{font-size:14px}
 }
+/* 国产内核（X5 / QQ / 微信）轻量降级：实时模糊是掉帧大头 */
+body.lite .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(12,22,38,.93)}
+body.lite .ticket{box-shadow:0 8px 22px rgba(0,0,0,.45)}
+body.lite .seal-big{box-shadow:0 2px 10px rgba(0,0,0,.45),inset 0 0 0 2px rgba(246,232,220,.16)}
+body.lite .lightdot{box-shadow:0 0 10px 3px rgba(246,231,200,.45)}
 </style>
 </head>
 <body data-page-node-id="UAr8FbyJKCvyZ7BTyZ7VWo">
@@ -700,8 +705,8 @@ function waybillNo(ts){
    兜底：现场算一段 16bit wav，交给 <audio> 元素播——这些内核对 audio 元素
    的兼容性远高于 Web Audio。数据全部运行时生成，不联网、不占文件体积。   */
 const PCMSnd = (() => {
-  const SR = 22050;
-  const cache = {}, pool = [];
+  const SR = 16000;                 /* 低频音效，16k 足够，数据量比 22050 少三成 */
+  const cache = {}, els = {};
   let everPlayed = false;
   const OSC = {
     sine: p => Math.sin(p),
@@ -791,39 +796,65 @@ const PCMSnd = (() => {
     if(u) cache[key] = u;
     return u;
   }
-  function play(u){
+  /* 每个音效独占 1~2 个 <audio>：重复播不再重新解码 data URI（X5 上这是卡顿大头） */
+  function fire(p, u, key){
+    p.busy = true;
+    try{
+      p.el.onended = () => { p.busy = false; };
+      if(p.el.src !== u) p.el.src = u;
+      p.el.currentTime = 0;
+      const pr = p.el.play();
+      if(pr && pr.then) pr.then(() => { everPlayed = true; }).catch(() => { p.busy = false; });
+      else everPlayed = true;
+    }catch(e){ p.busy = false; return false; }
+    clearTimeout(p.t);
+    p.t = setTimeout(() => { p.busy = false; }, ((LEN[key] || 1) + 0.4) * 1000);
+    return true;
+  }
+  function makeEl(u){
+    try{
+      const a = new Audio(); a.preload = 'auto'; a.setAttribute('playsinline', '');
+      a.src = u;
+      return { el:a, busy:false, t:0 };
+    }catch(e){ return null; }
+  }
+  function playKey(key){
+    const u = url(key);
     if(!u) return false;
-    while(pool.length < 6){
-      try{
-        const a = new Audio(); a.preload = 'auto'; a.setAttribute('playsinline', '');
-        pool.push({ el:a, busy:false, t:0 });
-      }catch(e){ break; }
+    let arr = els[key];
+    if(!arr){
+      const p = makeEl(u);
+      if(!p) return false;
+      arr = [p]; els[key] = arr;
+      return fire(p, u, key);
     }
-    for(let i = 0; i < pool.length; i++){
-      const p = pool[i];
-      if(p.busy) continue;
-      p.busy = true;
-      try{
-        p.el.onended = () => { p.busy = false; };
-        p.el.src = u;
-        p.el.currentTime = 0;
-        const pr = p.el.play();
-        if(pr && pr.then) pr.then(() => { everPlayed = true; }).catch(() => { p.busy = false; });
-        else everPlayed = true;
-      }catch(e){ p.busy = false; continue; }
-      clearTimeout(p.t);
-      p.t = setTimeout(() => { p.busy = false; }, 2200);
-      return true;
+    for(let i = 0; i < arr.length; i++){
+      if(!arr[i].busy) return fire(arr[i], u, key);
+    }
+    if(arr.length < 2){                      /* 连点太快时补一个轮换元素 */
+      const p = makeEl(u);
+      if(p){ arr.push(p); return fire(p, u, key); }
     }
     return false;
   }
-  // 预生成最常用的两段，别让第一次点击顿一下
-  function warm(){ try{ url('pound'); url('tap'); }catch(e){} }
-  return { url, play, warm, ok: () => everPlayed };
+  // 全量预热：分片生成 + 提前挂载解码，免得音效在自己该响的那一刻才现算（X5 上会掉帧）
+  function warm(){
+    const keys = ['tap', 'pound', 'stamp', 'chime', 'paper', 'whoosh', 'dawn'];
+    let i = 0;
+    const idle = window.requestIdleCallback || (fn => setTimeout(fn, 40));
+    (function step(){
+      if(i >= keys.length) return;
+      const k = keys[i++];
+      try{ url(k); const p = makeEl(cache[k]); if(p) els[k] = els[k] || [p]; }catch(e){}
+      idle(step);
+    })();
+  }
+  return { url, playKey, warm, ok: () => everPlayed };
 })();
 /* 这些内核里 Web Audio 不可靠，直接走 audio 元素音轨 */
 const USE_TAG_TRACK = /MicroMessenger|QQBrowser|MQQBrowser|X5|QQ\/|UCBrowser|baiduboxapp|Weibo|DingTalk/i
   .test(navigator.userAgent || '');
+if(USE_TAG_TRACK){ try{ document.body.classList.add('lite'); }catch(e){} }
 
 /* ---------- 音效（Web Audio 程序化合成，音量极轻） ---------- */
 const Sound = (() => {
@@ -841,8 +872,8 @@ const Sound = (() => {
   // 借 <audio> 把音频通道叫醒（X5 / iOS 里这是唯一稳的一招）
   function htmlPing(){
     if(htmlDone) return;
-    htmlDone = true;                       // 只试一次，避免反复抢占播放池
-    if(!PCMSnd.play(PCMSnd.url('silent', 1))) setTimeout(() => { try{ PCMSnd.play(PCMSnd.url('silent', 1)); }catch(e){} }, 400);
+    htmlDone = true;                       // 只试一次，避免反复抢占
+    if(!PCMSnd.playKey('silent')) setTimeout(() => { try{ PCMSnd.playKey('silent'); }catch(e){} }, 400);
     setTimeout(() => { try{ PCMSnd.warm(); }catch(e){} }, 250);
   }
   // 推一帧静音：X5 / iOS 上 "state 是 running 却不发声" 的经典解法
@@ -1013,8 +1044,9 @@ const Sound = (() => {
   function emit(key){
     if(!enabled) return;
     if(tagMode){
-      const u = PCMSnd.url(key);
-      if(u && PCMSnd.play(u)) return;
+      /* 触感：X5 里这会补上没有 Web Audio 震动的缺失，按下的"实感"很重要 */
+      if(key === 'stamp' && navigator.vibrate){ try{ navigator.vibrate(24); }catch(e){} }
+      if(PCMSnd.playKey(key)) return;
     }
     try{ WA[key](); }catch(e){}
   }
@@ -1327,15 +1359,17 @@ $('btn-stamp').addEventListener('click', () => {
   s.classList.remove('hold');
   void s.offsetWidth;
   s.classList.add('drop');
-  setTimeout(() => Sound.stamp(), 240); /* 声音跟着章落到纸上 */
+  Sound.tap();                            /* 按下即响，先给一个即时回应 */
+  if(navigator.vibrate){ try{ navigator.vibrate(14); }catch(e){} }
+  setTimeout(() => Sound.stamp(), 220); /* 杵声跟着章落到纸上 */
   const stage = $('scene-stamp');
   stage.classList.remove('shake'); void stage.offsetWidth; stage.classList.add('shake');
-  setTimeout(() => stage.classList.remove('shake'), 360);
+  setTimeout(() => stage.classList.remove('shake'), 340);
   setTimeout(() => {
     delete $('btn-stamp').dataset.busy;
     addStamp(current.stamp);
     goTo('deliver');
-  }, 620);
+  }, 470);
 });
 
 /* ---------- 6 · 送达 ---------- */
