@@ -1227,8 +1227,8 @@ SCENE_HOOKS.deliver = function(){
   if(isFuture && Pm){
     const C1 = { x: P0.x + (Pm.x - P0.x) * 0.48, y: Math.min(P0.y, Pm.y) - H * 0.30 };
     const C2 = { x: (Pm.x + P1.x) / 2 + 24, y: (Pm.y + P1.y) / 2 + 12 };
-    if(dashed) dashed.setAttribute('d',
-      'M' + _pt(P0) + ' Q' + _pt(C1) + ' ' + _pt(Pm) + ' Q' + _pt(C2) + ' ' + _pt(P1));
+    /* 虚线只画"奔月"一段——月亮收入存封格靠动画表现，不画回程线（避免送到又拿回的折返感） */
+    if(dashed) dashed.setAttribute('d', 'M' + _pt(P0) + ' Q' + _pt(C1) + ' ' + _pt(Pm));
     segs = [
       { P0, C: C1, P1: Pm, dur: 1700, pause: 550 },
       { P0: Pm, C: C2, P1, dur: 800 }
