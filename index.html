@@ -49,8 +49,11 @@ input,textarea{user-select:text;-webkit-user-select:text}
 
 /* ================= 星空（常驻层） ================= */
 #stars{position:absolute;inset:0;pointer-events:none;z-index:1}
-.star{position:absolute;border-radius:50%;background:#dfe9f7;animation:tw 4s ease-in-out infinite alternate}
-@keyframes tw{from{opacity:.18}to{opacity:.85}}
+/* 星空分层：整层一起呼吸，而不是 90 颗星各跑一条动画。
+   错落感靠 5 个层各自的时长/相位差做出来，渲染成本却只有原来的 1/18。 */
+.starl{position:absolute;inset:0;animation:tw 4s ease-in-out infinite alternate;will-change:opacity}
+.star{position:absolute;border-radius:50%;background:#dfe9f7}
+@keyframes tw{from{opacity:.34}to{opacity:1}}
 
 /* ================= 月亮（人间幕可见） ================= */
 #moon{position:absolute;right:11%;top:9%;width:92px;height:92px;z-index:2;pointer-events:none;
@@ -317,7 +320,7 @@ input,textarea{user-select:text;-webkit-user-select:text}
 
 /* ================= 无障碍 / 小屏 ================= */
 @media (prefers-reduced-motion: reduce){
-  .star,.ll,#rabbit.idle-breath,.pound-move{animation:none !important}
+  .starl,.star,.ll,#rabbit.idle-breath,.pound-move{animation:none !important}
   .flying-letter,.lightdot,#moon,.sort-letter{transition:opacity .5s ease !important}
 }
 @media (max-width:390px){
@@ -342,7 +345,7 @@ body.lite .seal-big{box-shadow:0 2px 10px rgba(0,0,0,.45),inset 0 0 0 2px rgba(2
 /* 自适应的兜底线：帧率采样不足 42fps 就自动点亮 .poor，
    把装饰性的东西全卸掉，保证"按下去有反应"这件事永远成立。 */
 body.poor .scene{transition:opacity .3s ease,visibility 0s linear .3s}
-body.poor .star,body.poor .ll,body.poor .rb.idle-breath{animation:none}
+body.poor .starl,body.poor .ll,body.poor .rb.idle-breath{animation:none}
 body.poor .pigeons{display:none}
 body.poor .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(12,22,38,.95)}
 body.poor #moon .disk{box-shadow:0 0 18px 4px rgba(246,231,200,.24)}
@@ -1145,14 +1148,24 @@ window.__snd = { state: () => Sound.state(), ready: () => Sound.ready() };
   window.__diag = diag;
 })();
 
-/* 帧率浮标：链接带 ?diag=1 时，左上角常显实时帧率。
-   低于 ~45fps 就说明这台机器被拖住了，跟網路无关。 */
+/* 帧率浮标 + 自适应降级。
+   ?diag=1 显示实时帧率；?full=1 禁用自动降级；?poor=1 强制精简（给真·低端机或手动对比用）。
+
+   教训（2026-09-24 大卡实测）：判定绝不能只看单个窗口。
+   微信 webview 刚 load 完的那 1~2 秒必然抖（星星生成 / 音频预热 / 首幕合成都挤在那儿），
+   单窗口判定会把 60fps、慢帧 17ms 的好机器永久锁死在精简模式里，再也不回来。
+   所以改成投票制：预热 2 个窗口不计票 → 连续 3 个差窗口才降级 → 连续 6 个好窗口再恢复。
+   另外留了应急通道：单窗口 fps<20 或出现 >320ms 的卡顿，立刻降级不等投票。 */
 var __probeDone = false;
 function runFrameProbe(){
   if(__probeDone) return;
   __probeDone = true;
-  var show = /[?&]diag=1/.test(location.search);
-  var el = null;
+  const q = location.search;
+  const show = /[?&]diag=1/.test(q);
+  const noAuto = /[?&]full=1/.test(q);
+  const lockPoor = /[?&]poor=1/.test(q);
+  if(lockPoor){ try{ document.body.classList.add('poor'); }catch(e){} }
+  let el = null;
   if(show){
     el = document.createElement('div');
     el.style.cssText = 'position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top));z-index:9998;' +
@@ -1161,25 +1174,41 @@ function runFrameProbe(){
     el.textContent = 'fps…';
     document.body.appendChild(el);
   }
+  const WIN = 600, WARMUP = 2, DOWN = 3, UP = 6;
+  let win = 0, down = 0, up = 0;
   setTimeout(function(){
-    var n = 0, t0 = performance.now(), prev = t0, worst = 0;
+    let n = 0, t0 = performance.now(), prev = t0, worst = 0;
     (function loop(now){
-      var dt = now - prev; prev = now;
+      const dt = now - prev; prev = now;
       if(n > 0 && dt > worst) worst = dt;
       n++;
-      var el2 = now - t0, fps = n * 1000 / el2;
-      if(el2 >= 600){
-        // 机器跟不上就自动卸掉装饰，保证「按下去有反应」这条底线
-        if(fps < 42 || worst > 90){
-          if(!document.body.classList.contains('poor')){
-            document.body.classList.add('poor');
-            try{ track('perf', 'poor'); }catch(e){}
-          }
+      const span = now - t0, fps = n * 1000 / span;
+      if(span >= WIN){
+        win++;
+        if(!noAuto && !lockPoor && win > WARMUP){
+          const bad = fps < 42 || worst > 90;
+          const terrible = fps < 20 || worst > 320;
+          const isPoor = document.body.classList.contains('poor');
+          if(bad){
+            down++; up = 0;
+            if((terrible || down >= DOWN) && !isPoor){
+              try{ document.body.classList.add('poor'); track('perf', 'poor'); }catch(e){}
+            }
+          }else if(fps >= 52 && worst < 40){
+            up++; down = 0;
+            if(isPoor && up >= UP){
+              try{ document.body.classList.remove('poor'); track('perf', 'recover'); }catch(e){}
+            }
+          }else{ down = 0; up = 0; }   /* 中间地带：两边都不计票，避免来回抖 */
         }
         if(el){
-          var act = document.querySelector('.scene.active');
+          const act = document.querySelector('.scene.active');
+          const poorNow = document.body.classList.contains('poor');
+          let vote = '';
+          if(!poorNow && down > 0) vote = ' ↓' + down + '/' + DOWN;
+          else if(poorNow && up > 0) vote = ' ↑' + up + '/' + UP;
           el.textContent = Math.round(fps) + ' fps · 慢帧 ' + worst.toFixed(0) + 'ms · ' +
-            (document.body.classList.contains('poor') ? '精简' : '常规') + ' · ' +
+            (poorNow ? '精简' : '常规') + vote + ' · ' +
             (act ? act.id.replace('scene-', '') : '—');
         }
         n = 0; t0 = now; worst = 0;
@@ -1195,18 +1224,23 @@ window.__probe = runFrameProbe;
 /* ---------- 星空 ---------- */
 (function buildStars(){
   const box = $('stars');
-  // X5 / 微信里 90 颗星各跑一条动画太太太贵，砍一半并停掉逐星闪烁——星空照样在，只是不眨眼
+  // 别给每颗星挂一条动画 —— 90 条无限动画常驻全屏，在 X5 上是持续的帧预算开销。
+  // 改成 5 个整层各跑一条：层之间靠「不同时长 + 不同相位」造出错落感，动画数从 90 降到 5，
+  // 所以国产内核也照样能留住「星星在眨眼」这件事。
   const LITE = document.body.classList.contains('lite');
-  const N = LITE ? 44 : 90;
-  let html = '';
-  for(let i = 0; i < N; i++){
-    const s = (Math.random() * 2 + 1).toFixed(1);
-    html += '<div class="star" style="left:' + (Math.random() * 100).toFixed(2) + '%;top:' +
-            (Math.random() * 100).toFixed(2) + '%;width:' + s + 'px;height:' + s + 'px;' +
-            (LITE ? '' : 'animation-delay:-' + (Math.random() * 4).toFixed(2) + 's;') +
-            'opacity:' + (Math.random() * .5 + .2).toFixed(2) + '"></div>';
+  const N = LITE ? 66 : 90, LAYERS = 5;
+  const buckets = [];
+  for(let i = 0; i < LAYERS; i++){
+    buckets.push('<div class="starl" style="animation-duration:' + (3.4 + i * 1.1).toFixed(2) +
+                 's;animation-delay:-' + (i * 1.37).toFixed(2) + 's">');
   }
-  box.innerHTML = html;
+  for(let i = 0; i < N; i++){
+    const sz = (Math.random() * 2 + 1).toFixed(1);
+    buckets[i % LAYERS] += '<div class="star" style="left:' + (Math.random() * 100).toFixed(2) +
+      '%;top:' + (Math.random() * 100).toFixed(2) + '%;width:' + sz + 'px;height:' + sz +
+      'px;opacity:' + (Math.random() * .5 + .45).toFixed(2) + '"></div>';
+  }
+  box.innerHTML = buckets.map(b => b + '</div>').join('');
   // 信光
   const ll = $('letter-lights');
   let lh = '';
