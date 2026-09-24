@@ -187,7 +187,7 @@ input,textarea{user-select:text;-webkit-user-select:text}
 
 /* 玉兔情绪（用类选择器，克隆实例同样生效） */
 .rb .ear,.rb .mouth,.rb .glass,.rb .pestle,.rb .arm{transition:transform .45s ease}
-.rb[data-mood="sleepy"] .ear{transform-origin:center bottom;transform:rotate(-16deg)}
+.rb[data-mood="sleepy"] .ear{transform-box:fill-box;transform-origin:center bottom;transform:rotate(-14deg)}
 .rb[data-mood="sleepy"] .mouth{transform:scaleY(3.2)}
 .rb.lift .glass{transform:translateY(-8px) rotate(-4deg)}
 .rb .pound-move{transform-origin:center top}
@@ -429,10 +429,8 @@ input,textarea{user-select:text;-webkit-user-select:text}
   <div class="mood-bubble" id="sort-bubble" data-page-node-id="A7qKe9XB1dAKOQV0xA2qQ1"></div>
   <div id="rabbit-wrap" data-page-node-id="6PbsY6L24tGe8ILQUyNvtG"><svg id="rabbit" class="rb" viewBox="0 0 560 440" role="img" aria-label="值夜班的玉兔" data-page-node-id="BCxCC5lmQ8K0qcu2wffbL6">
     <ellipse cx="300" cy="404" rx="150" ry="12" fill="#050a12" opacity=".5" data-page-node-id="aJ0TYZPMMARE8DCOaUd49F"/>
-    <ellipse class="ear" cx="228" cy="96" rx="15" ry="64" fill="#f4eee0" transform="rotate(-16 228 96)" data-page-node-id="8B8Nvb8s7xBEoOx81UsIh3"/>
-    <ellipse class="ear" cx="272" cy="86" rx="15" ry="66" fill="#f4eee0" transform="rotate(7 272 86)" data-page-node-id="NvQvewRe8ZPVaz7UTMttBq"/>
-    <ellipse cx="228" cy="100" rx="6" ry="42" fill="#e8c4b6" transform="rotate(-16 228 100)" data-page-node-id="Ub2Nx1PRP40BZE8lkL4qwe"/>
-    <ellipse cx="272" cy="92" rx="6" ry="44" fill="#e8c4b6" transform="rotate(7 272 92)" data-page-node-id="T9KrCTqGFoWDuJrd2mgJku"/>
+    <g class="ear"><ellipse cx="228" cy="96" rx="15" ry="64" fill="#f4eee0" transform="rotate(-16 228 96)"/><ellipse cx="228" cy="100" rx="6" ry="42" fill="#e8c4b6" transform="rotate(-16 228 100)"/></g>
+    <g class="ear"><ellipse cx="272" cy="86" rx="15" ry="66" fill="#f4eee0" transform="rotate(7 272 86)"/><ellipse cx="272" cy="92" rx="6" ry="44" fill="#e8c4b6" transform="rotate(7 272 92)"/></g>
     <ellipse cx="256" cy="170" rx="60" ry="53" fill="#f4eee0" data-page-node-id="HcxPMWNDBK9BnLN00mQUsk"/>
     <path d="M148 402 C128 342 138 268 182 234 C220 204 268 220 288 262 C306 300 304 354 290 402 Z" fill="#f4eee0" data-page-node-id="aKANjgRYCdZzQpoAl14oL5"/>
     <circle cx="150" cy="356" r="22" fill="#fbf7ec" data-page-node-id="l1dNu0BCAt9Yiup8GfASs8"/>
@@ -1125,13 +1123,22 @@ SCENE_HOOKS.deliver = function(){
   dest.innerHTML = '';
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const DUR = reduce ? 400 : 2400;
+  /* 光点直接沿虚线 path 采样（getPointAtLength）——与虚线同一个坐标系，永不脱线 */
+  const LEN = path ? path.getTotalLength() : 0;
+  const sx = stage.clientWidth / W, sy = stage.clientHeight / H;
   const t0 = performance.now();
   (function frame(now){
     if(deliverRun !== deliverHookRun) return;
     const t = Math.min(1, (now - t0) / DUR);
-    const u = 1 - t;
-    d.style.left = (u*u*P0.x + 2*u*t*C.x + t*t*P1.x) + 'px';
-    d.style.top = (u*u*P0.y + 2*u*t*C.y + t*t*P1.y) + 'px';
+    if(path && LEN){
+      const pt = path.getPointAtLength(LEN * t);
+      d.style.left = (pt.x * sx) + 'px';
+      d.style.top = (pt.y * sy) + 'px';
+    } else {
+      const u = 1 - t;
+      d.style.left = (u*u*P0.x + 2*u*t*C.x + t*t*P1.x) + 'px';
+      d.style.top = (u*u*P0.y + 2*u*t*C.y + t*t*P1.y) + 'px';
+    }
     if(t < 1) requestAnimationFrame(frame);
     else setTimeout(() => { if(deliverRun === deliverHookRun) d.style.opacity = '0'; }, 200);
   })(t0);
