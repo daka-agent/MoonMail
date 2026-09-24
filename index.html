@@ -1189,7 +1189,8 @@ function runFrameProbe(){
     el = document.createElement('div');
     el.style.cssText = 'position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top));z-index:9998;' +
       'background:rgba(6,12,22,.72);border:1px solid rgba(240,196,105,.3);border-radius:8px;' +
-      'padding:5px 9px;color:#f0c469;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;pointer-events:none';
+      'padding:5px 9px;color:#f0c469;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;' +
+      'pointer-events:none;white-space:pre-line;max-width:70vw';
     el.textContent = 'fps…';
     document.body.appendChild(el);
   }
@@ -1231,9 +1232,17 @@ function runFrameProbe(){
           let vote = '';
           if(!poorNow && down > 0) vote = ' ↓' + down + '/' + DOWN;
           else if(poorNow && up > 0 && !pinned) vote = ' ↑' + up + '/' + UP;
+          let chain = '';
+          try{
+            const q = window.__ss;
+            if(q && (q.pd + q.ts + q.md + q.ck + q.pu + q.tu) > 0){
+              chain = '\n戳' + q.pd + '/' + q.ts + '/' + q.md + '/' + q.ck + '/' + q.pu + '/' + q.tu +
+                      ' 挡' + q.block + ' 落' + q.fire + ' 翻' + q.go + ' 狗' + q.dog;
+            }
+          }catch(e){}
           el.textContent = Math.round(fps) + ' fps · 慢帧 ' + worst.toFixed(0) + 'ms · ' +
             (poorNow ? (pinned ? '精简·已锁定' : '精简') : '常规') + vote + ' · ' +
-            (act ? act.id.replace('scene-', '') : '—');
+            (act ? act.id.replace('scene-', '') : '—') + chain;
         }
         n = 0; t0 = now; worst = 0;
       }
@@ -1499,10 +1508,22 @@ SCENE_HOOKS.stamp = function(){
 /* 按下必须"不可失败"：所有的同步步骤都极轻，任何一步出岔子都不许拖累后面。
    上一次把视觉塞进 requestAnimationFrame —— 机器一慢，帧排不上来，视觉就跟着不出现。 */
 let stampAt = 0;
+/* 点击链路探针：鸿蒙 ArkWeb 上"按四五下才有反应"，光看帧率没用——
+   必须知道事件到底有没有到达、到达的是哪一种、在哪一环被吞。?diag=1 浮标会显示这些计数。 */
+window.__ss = { pd:0, ts:0, md:0, ck:0, pu:0, tu:0, block:0, fire:0, go:0, dog:0 };
+const EV2K = { pointerdown:'pd', touchstart:'ts', mousedown:'md', click:'ck', pointerup:'pu', touchend:'tu' };
+function onStampEv(ev){
+  try{ const k = EV2K[(ev && ev.type) || '']; if(k) window.__ss[k]++; }catch(e){}
+  pressStamp();
+}
 function pressStamp(){
   const now = Date.now();
-  if(now - stampAt < 800) return;          /* pointerdown 之后还会跟来一次 click，挡掉 */
+  if(now - stampAt < 400){                 /* 只挡掉同一个手势跟来的 click；太长会把"着急连点"全吞掉 */
+    try{ window.__ss.block++; }catch(e){}
+    return;
+  }
   stampAt = now;
+  try{ window.__ss.fire++; }catch(e){}
 
   // 1) 同步：先让"按到了"这件事在画面上成立（改文字是纯 DOM，再卡也会显示）
   try{ const b = $('btn-stamp'); if(b) b.textContent = '已 落 章'; }catch(e){}
@@ -1519,22 +1540,46 @@ function pressStamp(){
   setTimeout(function(){ try{ if(navigator.vibrate) navigator.vibrate(14); }catch(e){} }, 0);
   setTimeout(function(){ try{ Sound.stamp(); }catch(e){} }, 185);   /* 压在章落到纸上那一瞬 */
 
-  // 3) 翻页
+  // 3) 翻页：写存档和翻页必须各自独立 try —— 挤在同一个 try 里，前者一抛异常后者就永远不执行
   setTimeout(function(){
-    try{ addStamp(current.stamp); goTo('deliver'); }catch(e){}
+    try{ addStamp(current.stamp); }catch(e){}
+    try{ window.__ss.go++; goTo('deliver'); }catch(e){}
   }, 360);
 
   // 4) 看门狗：不管上面哪一步掉链子，1.1 秒内必须离开这一幕，不许把人晾着
   setTimeout(function(){
     try{
       const sc = $('scene-stamp');
-      if(sc && sc.classList.contains('active')) goTo('deliver');
+      if(sc && sc.classList.contains('active')){
+        window.__ss.dog++;
+        let ok = false;
+        try{ goTo('deliver'); ok = true; }catch(e){}
+        if(!ok){
+          /* 终极兜底：连 goTo 都抛异常时，手工切幕（纯 class 操作，几乎不可能失败）。
+             宁可动画不跑，也不能把人永远晾在这一幕。 */
+          try{
+            const a = $('scene-stamp'), b = $('scene-deliver');
+            if(a && a.classList.contains('active') && b){ a.classList.remove('active'); b.classList.add('active'); }
+          }catch(e){}
+        }
+      }
     }catch(e){}
   }, 1100);
 }
-if(window.PointerEvent) $('btn-stamp').addEventListener('pointerdown', pressStamp);
-$('btn-stamp').addEventListener('touchstart', pressStamp, { passive:true });
-$('btn-stamp').addEventListener('click', pressStamp);
+/* 事件面铺满：不同内核发的事件种类不一样（有的只发 touchstart，有的只发 pointerdown），
+   只绑两三种就等于赌内核。六种全绑，靠 400ms 去抖保证一个手势只生效一次。 */
+const btnStamp = $('btn-stamp');
+['pointerdown', 'touchstart', 'mousedown', 'click', 'pointerup', 'touchend'].forEach(function(t){
+  try{ btnStamp.addEventListener(t, onStampEv, { passive:true }); }catch(e){}
+});
+/* 冗余通道：这一幕的任意位置点击也走同一流程。若某内核上按钮的事件绑定失效（或热区判定异常），
+   还有第二条路可走；同一个手势冒泡上来会被 400ms 去抖挡掉，不会落两次。 */
+try{
+  const sc = $('scene-stamp');
+  ['pointerdown', 'touchstart', 'click'].forEach(function(t){
+    try{ sc.addEventListener(t, onStampEv, { passive:true }); }catch(e){}
+  });
+}catch(e){}
 
 /* ---------- 6 · 送达 ---------- */
 let deliverHookRun = 0;
