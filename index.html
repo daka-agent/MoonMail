@@ -219,9 +219,11 @@ input,textarea{user-select:text;-webkit-user-select:text}
   box-shadow:0 3px 16px rgba(0,0,0,.45),inset 0 0 0 2px rgba(246,232,220,.16);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
   font-family:var(--font-kai);color:#f6e8dc;font-size:30px;font-weight:600;line-height:1}
-.seal-big.drop{animation:sealDrop .5s cubic-bezier(.4,1.5,.6,1) both}
-@keyframes sealDrop{from{transform:rotate(3deg) translateY(-96px) scale(1.16);opacity:0}
-  to{transform:rotate(3deg) translateY(0) scale(1);opacity:1}}
+.seal-big.hold{animation:sealHold 2s ease-in-out infinite}
+@keyframes sealHold{0%,100%{transform:rotate(3deg) translateY(-30px) scale(1.05)}50%{transform:rotate(6deg) translateY(-42px) scale(1.05)}}
+.seal-big.drop{animation:sealDrop .3s cubic-bezier(.6,0,.8,.5) both}
+@keyframes sealDrop{from{transform:rotate(3deg) translateY(-36px) scale(1.05)}
+  to{transform:rotate(3deg) translateY(0) scale(1)}}
 
 /* 送达 */
 .deliver-stage{position:relative;width:min(430px,92vw);height:270px}
@@ -235,6 +237,7 @@ input,textarea{user-select:text;-webkit-user-select:text}
   border-radius:4px;background:rgba(12,22,38,.88);color:var(--gold);
   font-family:var(--font-kai);font-size:13px;line-height:24px;text-align:center;
   transform:rotate(6deg);animation:pop .7s ease both}
+.btn:active{transform:scale(.96)}
 @keyframes pop{from{opacity:0;transform:scale(.2)}to{opacity:1;transform:scale(1)}}
 
 /* ================= 7 · 运单 ================= */
@@ -1031,11 +1034,11 @@ function doPound(ev){
   if(pounded === 1) say('pound-bubble', '对，就这样。');
   if(pounded === 3) say('pound-bubble', dailyPick(['再加一把劲。', '快了，再两下。'], 3));
   if(pounded >= POUND_NEED){
-    $('pound-hint').textContent = '光出来了。';
+    $('pound-hint').textContent = '光出来了，去盖月戳';
     say('pound-bubble', dailyPick(CONTENT.rabbit.pound, 2));
     Sound.chime();
     for(let i = 0; i < 14; i++) setTimeout(() => burst(null, true), i * 55);
-    setTimeout(() => goTo('stamp'), 1500);
+    setTimeout(() => goTo('stamp'), 900);
   }
 }
 $('scene-pound').addEventListener('click', doPound);
@@ -1059,6 +1062,7 @@ function burst(ev, center){
 SCENE_HOOKS.stamp = function(){
   const s = $('seal-big');
   s.classList.remove('drop');
+  s.classList.add('hold');
   void s.offsetWidth;
   say('stamp-bubble', dailyPick(CONTENT.rabbit.stamp, 4));
 };
@@ -1066,8 +1070,10 @@ $('btn-stamp').addEventListener('click', () => {
   if($('btn-stamp').dataset.busy) return;
   $('btn-stamp').dataset.busy = '1';
   const s = $('seal-big');
+  s.classList.remove('hold');
+  void s.offsetWidth;
   s.classList.add('drop');
-  Sound.stamp();
+  setTimeout(() => Sound.stamp(), 240); /* 声音跟着章落到纸上 */
   const stage = $('scene-stamp');
   stage.classList.remove('shake'); void stage.offsetWidth; stage.classList.add('shake');
   setTimeout(() => stage.classList.remove('shake'), 360);
@@ -1075,44 +1081,77 @@ $('btn-stamp').addEventListener('click', () => {
     delete $('btn-stamp').dataset.busy;
     addStamp(current.stamp);
     goTo('deliver');
-  }, 900);
+  }, 620);
 });
 
 /* ---------- 6 · 送达 ---------- */
 let deliverHookRun = 0;
+function _pt(p){ return p.x.toFixed(1) + ' ' + p.y.toFixed(1); }
+/* 二次贝塞尔数值采样：与虚线共用同一份坐标，弧长自算，不依赖内核 getTotalLength */
+function _qSample(P0, C, P1){
+  const pts = [{ x: P0.x, y: P0.y, l: 0 }];
+  let L = 0, px = P0.x, py = P0.y;
+  for(let i = 1; i <= 64; i++){
+    const t = i / 64, u = 1 - t;
+    const x = u*u*P0.x + 2*u*t*C.x + t*t*P1.x;
+    const y = u*u*P0.y + 2*u*t*C.y + t*t*P1.y;
+    L += Math.hypot(x - px, y - py);
+    pts.push({ x, y, l: L });
+    px = x; py = y;
+  }
+  return { pts, L };
+}
+function _qPoint(s, dist){
+  const pts = s.pts;
+  if(dist <= 0) return pts[0];
+  if(dist >= s.L) return pts[pts.length - 1];
+  let lo = 0, hi = pts.length - 1;
+  while(lo < hi - 1){ const mid = (lo + hi) >> 1; if(pts[mid].l < dist) lo = mid; else hi = mid; }
+  const a = pts[lo], b = pts[hi];
+  const k = (dist - a.l) / (b.l - a.l || 1);
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+}
 SCENE_HOOKS.deliver = function(){
-  $('deliver-copy').innerHTML = current.toType === 'moon'
-    ? '它沿着月线走了。<br>月亮上多了一点光，那是你的话。'
-    : current.toType === 'future'
-      ? '信封好了，放进了存封格。<br>到那天，它会自己回来找你。'
+  const isFuture = current.toType === 'future';
+  $('deliver-copy').innerHTML = isFuture
+    ? '信先寄到了月亮上，由月亮收进存封格。<br>到那天，它会自己回来找你。'
+    : current.toType === 'moon'
+      ? '它沿着月线走了。<br>月亮上多了一点光，那是你的话。'
       : '它沿着月线走了。<br>收件人抬头就能看见。';
   const d = $('lightdot');
   const stage = $('moon-dest').parentElement;
   const W = stage.clientWidth || 430, H = stage.clientHeight || 270;
   const svg = document.querySelector('#scene-deliver .moonline');
-  const path = svg ? svg.querySelector('path') : null;
+  const dashed = svg ? svg.querySelector('path') : null;
   if(svg) svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-  /* 起点固定在左下；终点动态量取：月亮/人间线 → 页面月盘，未来信 → 右上存封位 */
   const P0 = { x: 52 / 430 * W, y: 221 / 270 * H };
-  let P1;
-  if(current.toType === 'future'){
-    P1 = { x: W * 0.86, y: H * 0.16 };
-  } else {
-    const md = document.querySelector('#moon .disk');
-    const sr = stage.getBoundingClientRect();
-    if(md && sr.width){
-      const mr = md.getBoundingClientRect();
-      P1 = { x: mr.left + mr.width * 0.45 - sr.left, y: mr.top + mr.height * 0.55 - sr.top };
-    } else {
-      P1 = { x: 372 / 430 * W, y: 34 / 270 * H };
-    }
+  /* 月亮点取布局位置——不受进场景过渡动画影响 */
+  let Pm = null;
+  const md = document.querySelector('#moon .disk');
+  const sr = stage.getBoundingClientRect();
+  if(md && sr.width){
+    const mr = md.getBoundingClientRect();
+    Pm = { x: mr.left + mr.width * 0.45 - sr.left, y: mr.top + mr.height * 0.55 - sr.top };
   }
-  /* 拱形控制点：两端中点上方，保证"抛物"弧度 */
-  const C = { x: P0.x + (P1.x - P0.x) * 0.48, y: Math.min(P0.y, P1.y) - H * 0.38 };
-  if(path) path.setAttribute('d',
-    'M' + P0.x.toFixed(1) + ' ' + P0.y.toFixed(1) +
-    ' Q' + C.x.toFixed(1) + ' ' + C.y.toFixed(1) +
-    ' ' + P1.x.toFixed(1) + ' ' + P1.y.toFixed(1));
+  const P1 = isFuture
+    ? { x: W * 0.86, y: H * 0.16 }
+    : (Pm || { x: 372 / 430 * W, y: 34 / 270 * H });
+  /* 未来信两段航线：先上月亮，月亮再把它收进存封格；其余一弧到终点 */
+  let segs;
+  if(isFuture && Pm){
+    const C1 = { x: P0.x + (Pm.x - P0.x) * 0.48, y: Math.min(P0.y, Pm.y) - H * 0.30 };
+    const C2 = { x: (Pm.x + P1.x) / 2 + 24, y: (Pm.y + P1.y) / 2 + 12 };
+    if(dashed) dashed.setAttribute('d',
+      'M' + _pt(P0) + ' Q' + _pt(C1) + ' ' + _pt(Pm) + ' Q' + _pt(C2) + ' ' + _pt(P1));
+    segs = [
+      { P0, C: C1, P1: Pm, dur: 1700, pause: 550 },
+      { P0: Pm, C: C2, P1, dur: 800 }
+    ];
+  } else {
+    const C = { x: P0.x + (P1.x - P0.x) * 0.48, y: Math.min(P0.y, P1.y) - H * 0.38 };
+    if(dashed) dashed.setAttribute('d', 'M' + _pt(P0) + ' Q' + _pt(C) + ' ' + _pt(P1));
+    segs = [ { P0, C, P1, dur: 2400 } ];
+  }
   let deliverRun = deliverHookRun + 1; deliverHookRun = deliverRun;
   d.style.transition = 'none';
   d.style.left = P0.x + 'px';
@@ -1122,39 +1161,47 @@ SCENE_HOOKS.deliver = function(){
   const dest = $('moon-dest');
   dest.innerHTML = '';
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const DUR = reduce ? 400 : 2400;
-  /* 光点直接沿虚线 path 采样（getPointAtLength）——与虚线同一个坐标系，永不脱线 */
-  const LEN = path ? path.getTotalLength() : 0;
-  const sx = stage.clientWidth / W, sy = stage.clientHeight / H;
-  const t0 = performance.now();
-  (function frame(now){
-    if(deliverRun !== deliverHookRun) return;
-    const t = Math.min(1, (now - t0) / DUR);
-    if(path && LEN){
-      const pt = path.getPointAtLength(LEN * t);
-      d.style.left = (pt.x * sx) + 'px';
-      d.style.top = (pt.y * sy) + 'px';
-    } else {
-      const u = 1 - t;
-      d.style.left = (u*u*P0.x + 2*u*t*C.x + t*t*P1.x) + 'px';
-      d.style.top = (u*u*P0.y + 2*u*t*C.y + t*t*P1.y) + 'px';
-    }
-    if(t < 1) requestAnimationFrame(frame);
-    else setTimeout(() => { if(deliverRun === deliverHookRun) d.style.opacity = '0'; }, 200);
-  })(t0);
-  setTimeout(() => {
-    if(deliverRun !== deliverHookRun) return;
-    Sound.dawn();
+  const K = reduce ? 0.22 : 1;
+  function arrive(){
     const s = document.createElement('div');
     if(current.toType === 'future'){
+      Sound.chime();
       s.className = 'sealed-mark'; s.textContent = '封';
       s.style.left = (P1.x - 16) + 'px'; s.style.top = (P1.y - 13) + 'px';
     } else {
+      Sound.dawn();
       s.className = 'newstar';
       s.style.left = (P1.x - 3) + 'px'; s.style.top = (P1.y - 3) + 'px';
     }
     dest.appendChild(s);
-  }, DUR + 250);
+    setTimeout(() => { if(deliverRun === deliverHookRun) d.style.opacity = '0'; }, 200);
+  }
+  let si = 0;
+  (function runSeg(){
+    if(deliverRun !== deliverHookRun) return;
+    const seg = segs[si++];
+    const curve = _qSample(seg.P0, seg.C, seg.P1);
+    const t0 = performance.now(), dur = Math.max(1, seg.dur * K);
+    (function frame(now){
+      if(deliverRun !== deliverHookRun) return;
+      const t = Math.min(1, (now - t0) / dur);
+      const p = _qPoint(curve, curve.L * t);
+      d.style.left = p.x + 'px';
+      d.style.top = p.y + 'px';
+      if(t < 1){ requestAnimationFrame(frame); return; }
+      if(seg.pause){
+        /* 抵月：月亮上先亮一点光，稍停再收入存封格 */
+        Sound.dawn();
+        const g = document.createElement('div');
+        g.className = 'newstar';
+        g.style.left = (seg.P1.x - 3) + 'px'; g.style.top = (seg.P1.y - 3) + 'px';
+        dest.appendChild(g);
+        setTimeout(runSeg, seg.pause * K);
+      } else {
+        arrive();
+      }
+    })(t0);
+  })();
 };
 
 /* ---------- 7 · 运单 ---------- */
