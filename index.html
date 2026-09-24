@@ -66,9 +66,13 @@ input,textarea{user-select:text;-webkit-user-select:text}
 
 /* ================= 幕 ================= */
 .scene{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;justify-content:safe center;opacity:0;pointer-events:none;transition:opacity .85s ease;
+  justify-content:center;justify-content:safe center;opacity:0;pointer-events:none;visibility:hidden;
+  transition:opacity .85s ease,visibility 0s linear .85s;
   overflow-y:auto;overflow-x:hidden;padding:calc(20px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom))}
-.scene.active{opacity:1;pointer-events:auto}
+.scene.active{opacity:1;pointer-events:auto;visibility:visible;transition:opacity .85s ease,visibility 0s}
+/* 没上场的幕彻底熄火：十幕各自带着动画、渐变、光晕全屏叠着跑，
+   低端安卓 / X5 上会一直占着合成，按下要好几百毫秒才挤出一帧。停掉它们，画面立刻跟手。 */
+.scene:not(.active) *{animation-play-state:paused}
 .scene > *{flex-shrink:0}
 .scene.room{background:radial-gradient(ellipse 90% 70% at 50% 42%,#16263d 0%,#0c1729 60%,#070d18 100%)}
 .rise{animation:rise .95s cubic-bezier(.22,.9,.3,1) both}
@@ -331,6 +335,11 @@ input,textarea{user-select:text;-webkit-user-select:text}
   .lede{font-size:14px}
 }
 /* 国产内核（X5 / QQ / 微信）轻量降级：实时模糊是掉帧大头 */
+/* 只晃印章那一小块——原来晃的是整屏场景（带全屏径向渐变），重绘面积是几百倍 */
+.jolt{animation:shk .3s ease}
+body.lite .stamp-stage{will-change:transform}
+body.lite .star{animation:none}   /* 90 条星闪动画在 X5 上不划算，换静态星空 */
+body.lite #moon .disk{box-shadow:0 0 26px 6px rgba(246,231,200,.26)}  /* 超大光晕在 X5 上很贵 */
 body.lite .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(12,22,38,.93)}
 body.lite .ticket{box-shadow:0 8px 22px rgba(0,0,0,.45)}
 body.lite .seal-big{box-shadow:0 2px 10px rgba(0,0,0,.45),inset 0 0 0 2px rgba(246,232,220,.16)}
@@ -838,15 +847,15 @@ const PCMSnd = (() => {
     return false;
   }
   // 全量预热：分片生成 + 提前挂载解码，免得音效在自己该响的那一刻才现算（X5 上会掉帧）
-  function warm(){
-    const keys = ['tap', 'pound', 'stamp', 'chime', 'paper', 'whoosh', 'dawn'];
+  // 刻意不用 requestIdleCallback：这页一直在跑动画，idle 回调可能被推得很久甚至轮不到
+  function warm(list){
+    const keys = list || ['tap', 'pound', 'stamp', 'chime', 'paper', 'whoosh', 'dawn'];
     let i = 0;
-    const idle = window.requestIdleCallback || (fn => setTimeout(fn, 40));
     (function step(){
       if(i >= keys.length) return;
       const k = keys[i++];
-      try{ url(k); const p = makeEl(cache[k]); if(p) els[k] = els[k] || [p]; }catch(e){}
-      idle(step);
+      try{ url(k); if(!els[k]){ const p = makeEl(cache[k]); if(p) els[k] = [p]; } }catch(e){}
+      setTimeout(step, 24);
     })();
   }
   return { url, playKey, warm, ok: () => everPlayed };
@@ -1106,6 +1115,7 @@ window.__snd = { state: () => Sound.state(), ready: () => Sound.ready() };
       'AudioContext：<b>' + Sound.state() + '</b><br>' +
       'audio 轨成功播过：<b>' + (PCMSnd.ok() ? '是' : '否') + '</b><br>' +
       '声音开关：<b>' + (Sound.enabled ? '开' : '关 —— 去点右上角喇叭') + '</b><br>' +
+      '实时帧率：<b id="__sndfps">测一下…</b><br>' +
       '<div style="opacity:.55;margin-top:6px;font-size:11px;word-break:break-all">' +
       (navigator.userAgent || '').slice(0, 130) + '</div>' +
       '<div id="__sndtry" style="margin-top:10px;padding:10px 0;text-align:center;' +
@@ -1113,19 +1123,59 @@ window.__snd = { state: () => Sound.state(), ready: () => Sound.ready() };
       '<div id="__sndclose" style="margin-top:8px;text-align:right;opacity:.5">关闭</div>';
     box.querySelector('#__sndtry').onclick = () => Sound.pound();
     box.querySelector('#__sndclose').onclick = () => box.remove();
+    const f = box.querySelector('#__sndfps');
+    let fn = 0, ft0 = performance.now(), fprev = ft0, fworst = 0;
+    (function loop(now){
+      if(!document.body.contains(f)) return;
+      const dt = now - fprev; fprev = now;
+      if(fn > 0 && dt > fworst) fworst = dt;
+      fn++;
+      if(now - ft0 >= 600){
+        f.textContent = Math.round(fn * 1000 / (now - ft0)) + ' fps · 最慢一帧 ' + fworst.toFixed(0) + 'ms';
+        fn = 0; ft0 = now; fworst = 0;
+      }
+      requestAnimationFrame(loop);
+    })(performance.now());
   }
   window.__diag = diag;
+})();
+
+/* 帧率浮标：链接带 ?diag=1 时，左上角常显实时帧率。
+   低于 ~45fps 就说明这台机器被拖住了，跟網路无关。 */
+(function(){
+  if(!/[?&]diag=1/.test(location.search)) return;
+  var el = document.createElement('div');
+  el.style.cssText = 'position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top));z-index:9998;' +
+    'background:rgba(6,12,22,.72);border:1px solid rgba(240,196,105,.3);border-radius:8px;' +
+    'padding:5px 9px;color:#f0c469;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;pointer-events:none';
+  el.textContent = 'fps…';
+  document.body.appendChild(el);
+  var n = 0, t0 = performance.now(), prev = t0, worst = 0;
+  (function loop(now){
+    var dt = now - prev; prev = now;
+    if(n > 0 && dt > worst) worst = dt;
+    n++;
+    if(now - t0 >= 500){
+      el.textContent = Math.round(n * 1000 / (now - t0)) + ' fps · 慢帧 ' + worst.toFixed(0) + 'ms';
+      n = 0; t0 = now; worst = 0;
+    }
+    requestAnimationFrame(loop);
+  })(performance.now());
 })();
 
 /* ---------- 星空 ---------- */
 (function buildStars(){
   const box = $('stars');
+  // X5 / 微信里 90 颗星各跑一条动画太太太贵，砍一半并停掉逐星闪烁——星空照样在，只是不眨眼
+  const LITE = document.body.classList.contains('lite');
+  const N = LITE ? 44 : 90;
   let html = '';
-  for(let i = 0; i < 90; i++){
+  for(let i = 0; i < N; i++){
     const s = (Math.random() * 2 + 1).toFixed(1);
     html += '<div class="star" style="left:' + (Math.random() * 100).toFixed(2) + '%;top:' +
-            (Math.random() * 100).toFixed(2) + '%;width:' + s + 'px;height:' + s + 'px;animation-delay:-' +
-            (Math.random() * 4).toFixed(2) + 's;opacity:' + (Math.random() * .5 + .2).toFixed(2) + '"></div>';
+            (Math.random() * 100).toFixed(2) + '%;width:' + s + 'px;height:' + s + 'px;' +
+            (LITE ? '' : 'animation-delay:-' + (Math.random() * 4).toFixed(2) + 's;') +
+            'opacity:' + (Math.random() * .5 + .2).toFixed(2) + '"></div>';
   }
   box.innerHTML = html;
   // 信光
@@ -1350,27 +1400,33 @@ SCENE_HOOKS.stamp = function(){
   s.classList.remove('drop');
   s.classList.add('hold');
   void s.offsetWidth;
+  try{ PCMSnd.warm(['tap', 'stamp']); }catch(e){}   /* 一进幕就把这两个音算好，按下那刻不再现算 */
   say('stamp-bubble', dailyPick(CONTENT.rabbit.stamp, 4));
 };
-$('btn-stamp').addEventListener('click', () => {
-  if($('btn-stamp').dataset.busy) return;
-  $('btn-stamp').dataset.busy = '1';
+/* 按下那一刻是 pointerdown / touchstart，不等 click —— 微信 X5 里 click 有时会晚半拍才到，
+   按下去没反应就是这么来的。视觉、声音、震动全在第一帧给出去。 */
+let stampFired = false;
+function pressStamp(){
+  if(stampFired) return;                       /* pointerdown 之后还会来一次 click，挡掉 */
+  stampFired = true;
+  setTimeout(() => { stampFired = false; }, 1500);
   const s = $('seal-big');
+  const stage = document.querySelector('#scene-stamp .stamp-stage');
   s.classList.remove('hold');
-  void s.offsetWidth;
-  s.classList.add('drop');
-  Sound.tap();                            /* 按下即响，先给一个即时回应 */
-  if(navigator.vibrate){ try{ navigator.vibrate(14); }catch(e){} }
-  setTimeout(() => Sound.stamp(), 220); /* 杵声跟着章落到纸上 */
-  const stage = $('scene-stamp');
-  stage.classList.remove('shake'); void stage.offsetWidth; stage.classList.add('shake');
-  setTimeout(() => stage.classList.remove('shake'), 340);
-  setTimeout(() => {
-    delete $('btn-stamp').dataset.busy;
-    addStamp(current.stamp);
-    goTo('deliver');
-  }, 470);
-});
+  requestAnimationFrame(() => {
+    try{ s.classList.add('drop'); }catch(e){}
+    /* 只晃印章那一小块，不再晃整屏 */
+    if(stage){ stage.classList.remove('jolt'); void stage.offsetWidth; stage.classList.add('jolt');
+      setTimeout(() => { try{ stage.classList.remove('jolt'); }catch(e){} }, 320); }
+    Sound.tap();
+    if(navigator.vibrate){ try{ navigator.vibrate(14); }catch(e){} }
+  });
+  setTimeout(() => Sound.stamp(), 190);        /* 杵声压在章落到纸上那一瞬 */
+  setTimeout(() => { addStamp(current.stamp); goTo('deliver'); }, 400);
+}
+if(window.PointerEvent) $('btn-stamp').addEventListener('pointerdown', pressStamp);
+$('btn-stamp').addEventListener('touchstart', pressStamp, { passive:true });
+$('btn-stamp').addEventListener('click', pressStamp);
 
 /* ---------- 6 · 送达 ---------- */
 let deliverHookRun = 0;
