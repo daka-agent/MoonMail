@@ -337,12 +337,17 @@ input,textarea{user-select:text;-webkit-user-select:text}
 /* 国产内核（X5 / QQ / 微信）轻量降级：实时模糊是掉帧大头 */
 /* 只晃印章那一小块——原来晃的是整屏场景（带全屏径向渐变），重绘面积是几百倍 */
 .jolt{animation:shk .3s ease}
-body.lite .stamp-stage{will-change:transform}
-body.lite .star{animation:none}   /* 90 条星闪动画在 X5 上不划算，换静态星空 */
-body.lite #moon .disk{box-shadow:0 0 26px 6px rgba(246,231,200,.26)}  /* 超大光晕在 X5 上很贵 */
-body.lite .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(12,22,38,.93)}
-body.lite .ticket{box-shadow:0 8px 22px rgba(0,0,0,.45)}
+body.lite .seal-big{will-change:transform}   /* 真做动画的是它：提前抬层，按下那帧不用现建 */
 body.lite .seal-big{box-shadow:0 2px 10px rgba(0,0,0,.45),inset 0 0 0 2px rgba(246,232,220,.16)}
+/* 自适应的兜底线：帧率采样不足 42fps 就自动点亮 .poor，
+   把装饰性的东西全卸掉，保证"按下去有反应"这件事永远成立。 */
+body.poor .scene{transition:opacity .3s ease,visibility 0s linear .3s}
+body.poor .star,body.poor .ll,body.poor .rb.idle-breath{animation:none}
+body.poor .pigeons{display:none}
+body.poor .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(12,22,38,.95)}
+body.poor #moon .disk{box-shadow:0 0 18px 4px rgba(246,231,200,.24)}
+body.poor .title{text-shadow:none}
+body.poor .seal-big.hold{animation-duration:3s}
 body.lite .lightdot{box-shadow:0 0 10px 3px rgba(246,231,200,.45)}
 </style>
 </head>
@@ -1142,26 +1147,50 @@ window.__snd = { state: () => Sound.state(), ready: () => Sound.ready() };
 
 /* 帧率浮标：链接带 ?diag=1 时，左上角常显实时帧率。
    低于 ~45fps 就说明这台机器被拖住了，跟網路无关。 */
-(function(){
-  if(!/[?&]diag=1/.test(location.search)) return;
-  var el = document.createElement('div');
-  el.style.cssText = 'position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top));z-index:9998;' +
-    'background:rgba(6,12,22,.72);border:1px solid rgba(240,196,105,.3);border-radius:8px;' +
-    'padding:5px 9px;color:#f0c469;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;pointer-events:none';
-  el.textContent = 'fps…';
-  document.body.appendChild(el);
-  var n = 0, t0 = performance.now(), prev = t0, worst = 0;
-  (function loop(now){
-    var dt = now - prev; prev = now;
-    if(n > 0 && dt > worst) worst = dt;
-    n++;
-    if(now - t0 >= 500){
-      el.textContent = Math.round(n * 1000 / (now - t0)) + ' fps · 慢帧 ' + worst.toFixed(0) + 'ms';
-      n = 0; t0 = now; worst = 0;
-    }
-    requestAnimationFrame(loop);
-  })(performance.now());
-})();
+var __probeDone = false;
+function runFrameProbe(){
+  if(__probeDone) return;
+  __probeDone = true;
+  var show = /[?&]diag=1/.test(location.search);
+  var el = null;
+  if(show){
+    el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:8px;top:calc(8px + env(safe-area-inset-top));z-index:9998;' +
+      'background:rgba(6,12,22,.72);border:1px solid rgba(240,196,105,.3);border-radius:8px;' +
+      'padding:5px 9px;color:#f0c469;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;pointer-events:none';
+    el.textContent = 'fps…';
+    document.body.appendChild(el);
+  }
+  setTimeout(function(){
+    var n = 0, t0 = performance.now(), prev = t0, worst = 0;
+    (function loop(now){
+      var dt = now - prev; prev = now;
+      if(n > 0 && dt > worst) worst = dt;
+      n++;
+      var el2 = now - t0, fps = n * 1000 / el2;
+      if(el2 >= 600){
+        // 机器跟不上就自动卸掉装饰，保证「按下去有反应」这条底线
+        if(fps < 42 || worst > 90){
+          if(!document.body.classList.contains('poor')){
+            document.body.classList.add('poor');
+            try{ track('perf', 'poor'); }catch(e){}
+          }
+        }
+        if(el){
+          var act = document.querySelector('.scene.active');
+          el.textContent = Math.round(fps) + ' fps · 慢帧 ' + worst.toFixed(0) + 'ms · ' +
+            (document.body.classList.contains('poor') ? '精简' : '常规') + ' · ' +
+            (act ? act.id.replace('scene-', '') : '—');
+        }
+        n = 0; t0 = now; worst = 0;
+      }
+      requestAnimationFrame(loop);   // 常驻监测：每一幕负载不一样
+    })(performance.now());
+  }, 1200);
+}
+if(document.readyState === 'complete') runFrameProbe();
+else window.addEventListener('load', runFrameProbe);
+window.__probe = runFrameProbe;
 
 /* ---------- 星空 ---------- */
 (function buildStars(){
@@ -1403,26 +1432,40 @@ SCENE_HOOKS.stamp = function(){
   try{ PCMSnd.warm(['tap', 'stamp']); }catch(e){}   /* 一进幕就把这两个音算好，按下那刻不再现算 */
   say('stamp-bubble', dailyPick(CONTENT.rabbit.stamp, 4));
 };
-/* 按下那一刻是 pointerdown / touchstart，不等 click —— 微信 X5 里 click 有时会晚半拍才到，
-   按下去没反应就是这么来的。视觉、声音、震动全在第一帧给出去。 */
-let stampFired = false;
+/* 按下必须"不可失败"：所有的同步步骤都极轻，任何一步出岔子都不许拖累后面。
+   上一次把视觉塞进 requestAnimationFrame —— 机器一慢，帧排不上来，视觉就跟着不出现。 */
+let stampAt = 0;
 function pressStamp(){
-  if(stampFired) return;                       /* pointerdown 之后还会来一次 click，挡掉 */
-  stampFired = true;
-  setTimeout(() => { stampFired = false; }, 1500);
-  const s = $('seal-big');
-  const stage = document.querySelector('#scene-stamp .stamp-stage');
-  s.classList.remove('hold');
-  requestAnimationFrame(() => {
-    try{ s.classList.add('drop'); }catch(e){}
-    /* 只晃印章那一小块，不再晃整屏 */
-    if(stage){ stage.classList.remove('jolt'); void stage.offsetWidth; stage.classList.add('jolt');
-      setTimeout(() => { try{ stage.classList.remove('jolt'); }catch(e){} }, 320); }
-    Sound.tap();
-    if(navigator.vibrate){ try{ navigator.vibrate(14); }catch(e){} }
-  });
-  setTimeout(() => Sound.stamp(), 190);        /* 杵声压在章落到纸上那一瞬 */
-  setTimeout(() => { addStamp(current.stamp); goTo('deliver'); }, 400);
+  const now = Date.now();
+  if(now - stampAt < 800) return;          /* pointerdown 之后还会跟来一次 click，挡掉 */
+  stampAt = now;
+
+  // 1) 同步：先让"按到了"这件事在画面上成立（改文字是纯 DOM，再卡也会显示）
+  try{ const b = $('btn-stamp'); if(b) b.textContent = '已 落 章'; }catch(e){}
+  try{ const s = $('seal-big'); if(s){ s.classList.remove('hold'); s.classList.add('drop'); } }catch(e){}
+  try{
+    const st = document.querySelector('#scene-stamp .stamp-stage');
+    if(st){ st.classList.remove('jolt'); void st.offsetWidth; st.classList.add('jolt');
+      setTimeout(() => { try{ st.classList.remove('jolt'); }catch(e){} }, 320); }
+  }catch(e){}
+
+  // 2) 声音和震动让到下一拍：`<audio>.play()` 在有的内核里是同步的，别让它堵住首帧
+  setTimeout(function(){ try{ Sound.tap(); }catch(e){} }, 0);
+  setTimeout(function(){ try{ if(navigator.vibrate) navigator.vibrate(14); }catch(e){} }, 0);
+  setTimeout(function(){ try{ Sound.stamp(); }catch(e){} }, 185);   /* 压在章落到纸上那一瞬 */
+
+  // 3) 翻页
+  setTimeout(function(){
+    try{ addStamp(current.stamp); goTo('deliver'); }catch(e){}
+  }, 360);
+
+  // 4) 看门狗：不管上面哪一步掉链子，1.1 秒内必须离开这一幕，不许把人晾着
+  setTimeout(function(){
+    try{
+      const sc = $('scene-stamp');
+      if(sc && sc.classList.contains('active')) goTo('deliver');
+    }catch(e){}
+  }, 1100);
 }
 if(window.PointerEvent) $('btn-stamp').addEventListener('pointerdown', pressStamp);
 $('btn-stamp').addEventListener('touchstart', pressStamp, { passive:true });
