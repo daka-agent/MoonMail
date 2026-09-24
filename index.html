@@ -342,6 +342,13 @@ input,textarea{user-select:text;-webkit-user-select:text}
 .jolt{animation:shk .3s ease}
 body.lite .seal-big{will-change:transform}   /* 真做动画的是它：提前抬层，按下那帧不用现建 */
 body.lite .seal-big{box-shadow:0 2px 10px rgba(0,0,0,.45),inset 0 0 0 2px rgba(246,232,220,.16)}
+/* 国产内核（X5/QQ/微信）一等公民就先把重活卸掉，别等 poor 触发才降。
+   这几条曾在某次编辑中被误删，导致「只有精简模式才流畅」——务必留着。 */
+body.lite .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(12,22,38,.93)}
+body.lite #moon .disk{box-shadow:0 0 26px 6px rgba(246,231,200,.26)}
+body.lite .title{text-shadow:none}
+body.lite .starl,body.lite .ll{animation:none}       /* 整层 Cache: opacity 动画在中低端 GPU 上仍要每帧混合全屏 */
+body.lite .scene{transition:opacity .5s ease,visibility 0s linear .5s}
 /* 自适应的兜底线：帧率采样不足 42fps 就自动点亮 .poor，
    把装饰性的东西全卸掉，保证"按下去有反应"这件事永远成立。 */
 body.poor .scene{transition:opacity .3s ease,visibility 0s linear .3s}
@@ -1174,8 +1181,11 @@ function runFrameProbe(){
     el.textContent = 'fps…';
     document.body.appendChild(el);
   }
-  const WIN = 600, WARMUP = 2, DOWN = 3, UP = 6;
-  let win = 0, down = 0, up = 0;
+  /* 参数是调过的：早降、晚升、不许来回抖。
+     教训：曾经把门槛放宽（WARMUP2/DOWN3/UP6），结果需要精简的机器要等 3 秒才降级，
+     而且降了又被轻易升回去，来回切换本身表现为卡顿。 */
+  const WIN = 600, WARMUP = 1, DOWN = 2, UP = 10;
+  let win = 0, down = 0, up = 0, everUp = false, pinned = false;
   setTimeout(function(){
     let n = 0, t0 = performance.now(), prev = t0, worst = 0;
     (function loop(now){
@@ -1193,11 +1203,13 @@ function runFrameProbe(){
             down++; up = 0;
             if((terrible || down >= DOWN) && !isPoor){
               try{ document.body.classList.add('poor'); track('perf', 'poor'); }catch(e){}
+              // 已经升回过常规又掉下来 → 说明这台机就是扛不住，钉死精简，别再反复试探
+              if(everUp) pinned = true;
             }
           }else if(fps >= 52 && worst < 40){
             up++; down = 0;
-            if(isPoor && up >= UP){
-              try{ document.body.classList.remove('poor'); track('perf', 'recover'); }catch(e){}
+            if(isPoor && up >= UP && !pinned){
+              try{ document.body.classList.remove('poor'); track('perf', 'recover'); everUp = true; }catch(e){}
             }
           }else{ down = 0; up = 0; }   /* 中间地带：两边都不计票，避免来回抖 */
         }
@@ -1206,9 +1218,9 @@ function runFrameProbe(){
           const poorNow = document.body.classList.contains('poor');
           let vote = '';
           if(!poorNow && down > 0) vote = ' ↓' + down + '/' + DOWN;
-          else if(poorNow && up > 0) vote = ' ↑' + up + '/' + UP;
+          else if(poorNow && up > 0 && !pinned) vote = ' ↑' + up + '/' + UP;
           el.textContent = Math.round(fps) + ' fps · 慢帧 ' + worst.toFixed(0) + 'ms · ' +
-            (poorNow ? '精简' : '常规') + vote + ' · ' +
+            (poorNow ? (pinned ? '精简·已锁定' : '精简') : '常规') + vote + ' · ' +
             (act ? act.id.replace('scene-', '') : '—');
         }
         n = 0; t0 = now; worst = 0;
@@ -1228,7 +1240,7 @@ window.__probe = runFrameProbe;
   // 改成 5 个整层各跑一条：层之间靠「不同时长 + 不同相位」造出错落感，动画数从 90 降到 5，
   // 所以国产内核也照样能留住「星星在眨眼」这件事。
   const LITE = document.body.classList.contains('lite');
-  const N = LITE ? 66 : 90, LAYERS = 5;
+  const N = LITE ? 44 : 90, LAYERS = 5;
   const buckets = [];
   for(let i = 0; i < LAYERS; i++){
     buckets.push('<div class="starl" style="animation-duration:' + (3.4 + i * 1.1).toFixed(2) +
