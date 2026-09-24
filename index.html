@@ -697,16 +697,81 @@ function waybillNo(ts){
 
 /* ---------- 音效（Web Audio 程序化合成，音量极轻） ---------- */
 const Sound = (() => {
-  let ctx = null, enabled = true, master = null;
+  let ctx = null, enabled = true, master = null, unlocked = false, htmlDone = false, tries = 0;
   try{ enabled = store.get('sound', 'on') !== 'off'; }catch(e){}
   function get(){
     if(!ctx){
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return null;
+      try{ ctx = new AC(); }catch(e){ return null; }
       master = ctx.createGain(); master.gain.value = 0.16; master.connect(ctx.destination);
     }
     return ctx;
   }
-  function resume(){ try{ const c = get(); if(c.state === 'suspended') c.resume(); }catch(e){} }
+  // 现搓一段 30ms 静音 wav：微信 / iOS 里必须"真的播过一段音频"，音频通道才肯开机
+  let silentUrl = null;
+  function wavUrl(){
+    if(silentUrl) return silentUrl;
+    try{
+      const sr = 8000, n = 240, bytes = 44 + n * 2;
+      const v = new DataView(new ArrayBuffer(bytes));
+      const w = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      w(0,'RIFF'); v.setUint32(4, bytes - 8, true); w(8,'WAVE'); w(12,'fmt ');
+      v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+      v.setUint32(24,sr,true); v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+      w(36,'data'); v.setUint32(40, n*2, true);
+      silentUrl = URL.createObjectURL(new Blob([v.buffer], { type:'audio/wav' }));
+    }catch(e){}
+    return silentUrl;
+  }
+  function htmlPing(){
+    if(htmlDone) return;
+    try{
+      const a = document.createElement('audio');
+      a.src = wavUrl() || ''; a.preload = 'auto'; a.playsinline = true;
+      const p = a.play();
+      if(p && p.then) p.then(() => { htmlDone = true; }).catch(() => {});
+      setTimeout(() => { try{ a.pause(); a.src = ''; a.remove(); }catch(e){} }, 1000);
+    }catch(e){}
+  }
+  // 推一帧静音：X5 / iOS 上 "state 是 running 却不发声" 的经典解法
+  function ping(c){
+    try{
+      const b = c.createBuffer(1, 1, c.sampleRate);
+      const s = c.createBufferSource(); s.buffer = b; s.connect(c.destination); s.start(0);
+    }catch(e){}
+    htmlPing();
+  }
+  // 每次用户手势都试一次，直到真正 running（微信里头几次常常会失败）
+  function unlock(){
+    if(!enabled || unlocked) return;
+    const c = get(); if(!c) return;
+    tries++;
+    if(c.state !== 'running'){ try{ c.resume(); }catch(e){} }
+    ping(c);
+    if(c.state === 'running') unlocked = true;
+    setTimeout(() => { try{ if(c.state === 'running') unlocked = true; }catch(e){} }, 80);
+  }
+  function resume(){ unlock(); }
+  // 发声前兜底：被系统挂起（切后台、来电）就现场叫醒
+  function ensure(){
+    if(!enabled) return null;
+    const c = get(); if(!c) return null;
+    if(c.state !== 'running'){
+      try{ c.resume(); }catch(e){}
+      ping(c);
+      if(c.state === 'running') unlocked = true;
+    }
+    return c;
+  }
+  function reWake(){
+    if(!enabled) return;
+    unlocked = false;
+    const c = get(); if(!c) return;
+    try{ c.resume(); }catch(e){}
+    ping(c);
+    setTimeout(unlock, 150);
+  }
   function noiseBuf(c, dur){
     const len = Math.floor(c.sampleRate * dur);
     const buf = c.createBuffer(1, len, c.sampleRate);
@@ -718,7 +783,8 @@ const Sound = (() => {
   function pound(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       const o = c.createOscillator(), g = c.createGain();
       o.type = 'sine';
       o.frequency.setValueAtTime(132, t);
@@ -736,7 +802,8 @@ const Sound = (() => {
   function paper(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       const ns = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain();
       bp.type = 'bandpass'; bp.frequency.value = 2400; bp.Q.value = 0.6;
       g.gain.setValueAtTime(0.35, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
@@ -748,7 +815,8 @@ const Sound = (() => {
   function whoosh(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       const dur = 1.6, len = Math.floor(c.sampleRate * dur);
       const buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
       let y = 0;
@@ -766,7 +834,8 @@ const Sound = (() => {
   function stamp(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       const o = c.createOscillator(), g = c.createGain();
       o.type = 'square';
       o.frequency.setValueAtTime(186, t);
@@ -785,7 +854,8 @@ const Sound = (() => {
   function chime(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       [[528.25, 0], [792.11, 0.12]].forEach(([f, d]) => {
         const o = c.createOscillator(), g = c.createGain();
         o.type = 'sine'; o.frequency.value = f;
@@ -799,7 +869,8 @@ const Sound = (() => {
   function dawn(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
         const o = c.createOscillator(), g = c.createGain();
         o.type = 'triangle'; o.frequency.value = f;
@@ -815,7 +886,8 @@ const Sound = (() => {
   function tap(){
     if(!enabled) return;
     try{
-      const c = get(), t = c.currentTime;
+      const c = ensure(); if(!c) return;
+      const t = c.currentTime;
       const o = c.createOscillator(), g = c.createGain();
       o.type = 'sine'; o.frequency.value = 396;
       g.gain.setValueAtTime(0.22, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
@@ -823,17 +895,27 @@ const Sound = (() => {
     }catch(e){}
   }
   return {
-    resume, pound, paper, whoosh, stamp, chime, dawn, tap,
+    resume, unlock, reWake, pound, paper, whoosh, stamp, chime, dawn, tap,
     toggle(){
       enabled = !enabled;
       store.set('sound', enabled ? 'on' : 'off');
+      if(enabled) unlock();
       return enabled;
     },
-    get enabled(){ return enabled; }
+    get enabled(){ return enabled; },
+    ready(){ return unlocked && !!ctx && ctx.state === 'running'; },
+    state(){ return ctx ? ctx.state : 'none'; }
   };
 })();
-['touchstart', 'mousedown', 'keydown'].forEach(ev =>
-  window.addEventListener(ev, () => Sound.resume(), { once:true, passive:true }));
+// 微信：要等 JSBridge 就绪才放音频，绑上再解锁一次
+document.addEventListener('WeixinJSBridgeReady', () => Sound.unlock());
+if(window.wx && typeof window.wx.ready === 'function'){ try{ window.wx.ready(() => Sound.unlock()); }catch(e){} }
+// 不用 once —— 第一次解锁在微信里经常失败，之后每次手势都再试
+['touchstart', 'touchend', 'pointerdown', 'mousedown', 'keydown', 'click'].forEach(ev =>
+  window.addEventListener(ev, () => Sound.unlock(), { passive:true }));
+window.addEventListener('pageshow', () => Sound.unlock());
+document.addEventListener('visibilitychange', () => { if(!document.hidden) Sound.reWake(); });
+window.__snd = { state: () => Sound.state(), ready: () => Sound.ready() };
 
 /* ---------- 星空 ---------- */
 (function buildStars(){
@@ -1031,6 +1113,10 @@ function doPound(ev){
   const off = RING_LEN * (1 - pounded / POUND_NEED);
   $('ring-fg').setAttribute('stroke-dashoffset', off);
   burst(ev);
+  if(pounded === 2 && !Sound.ready()){
+    $('pound-hint').innerHTML = '连点屏幕，帮它一起捣' +
+      '<span style="display:block;font-size:11px;opacity:.5;margin-top:6px">手机静音时听不到杵声</span>';
+  }
   if(pounded === 1) say('pound-bubble', '对，就这样。');
   if(pounded === 3) say('pound-bubble', dailyPick(['再加一把劲。', '快了，再两下。'], 3));
   if(pounded >= POUND_NEED){
