@@ -221,7 +221,7 @@ input,textarea{user-select:text;-webkit-user-select:text}
 @keyframes shk{20%{transform:translateX(-5px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
 /* 盖戳 */
 .stamp-stage{position:relative;width:min(300px,66vw);height:150px;display:flex;align-items:center;justify-content:center}
-.seal-big{width:96px;height:104px;border-radius:10px;transform:rotate(3deg);
+.seal-big{width:96px;height:104px;border-radius:10px;transform:rotate(3deg);will-change:transform;
   background:linear-gradient(150deg,#c2453a,#9e2f27);
   box-shadow:0 3px 16px rgba(0,0,0,.45),inset 0 0 0 2px rgba(246,232,220,.16);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
@@ -873,7 +873,19 @@ const PCMSnd = (() => {
       setTimeout(step, 24);
     })();
   }
-  return { url, playKey, warm, ok: () => everPlayed };
+  // 真实出声预热：解码只是"半热"，部分内核（鸿蒙 ArkWeb）第一次真正出声仍有可感的启动开销。
+  // 进盖戳幕时用近零音量真播一次，把音频输出管道焐热，第一次实响就不再是"第一次"。
+  function prime(key){
+    try{
+      const u = url(key); if(!u) return;
+      const p = makeEl(u); if(!p) return;
+      p.el.volume = 0.02;
+      const pr = p.el.play();
+      if(pr && pr.then) pr.catch(() => {});
+      setTimeout(() => { try{ p.el.pause(); p.el.src = ''; }catch(e){} }, 500);
+    }catch(e){}
+  }
+  return { url, playKey, warm, prime, ok: () => everPlayed };
 })();
 /* 这些内核里 Web Audio 不可靠，直接走 audio 元素音轨 */
 const USE_TAG_TRACK = /MicroMessenger|QQBrowser|MQQBrowser|X5|QQ\/|UCBrowser|baiduboxapp|Weibo|DingTalk/i
@@ -1476,6 +1488,7 @@ SCENE_HOOKS.stamp = function(){
   s.classList.add('hold');
   void s.offsetWidth;
   try{ PCMSnd.warm(['tap', 'stamp']); }catch(e){}   /* 一进幕就把这两个音算好，按下那刻不再现算 */
+  try{ PCMSnd.prime('tap'); }catch(e){}             /* 近零音量真播一次，焐热音频管道（鸿蒙首次出声开销） */
   say('stamp-bubble', dailyPick(CONTENT.rabbit.stamp, 4));
 };
 /* 按下必须"不可失败"：所有的同步步骤都极轻，任何一步出岔子都不许拖累后面。
@@ -1718,13 +1731,21 @@ function drawPoster(){
     ctx.beginPath(); ctx.arc(x, y, Math.random() * 2 + .8, 0, 7); ctx.fill();
   }
   ctx.globalAlpha = 1;
-  // 残月
+  // 满月：与屏幕上的月亮同一画法（径向渐变 + 柔光 + 环形山）。
+  // 旧版用 destination-out 抠残月——鸿蒙 ArkWeb 的画布不支持该合成模式，擦除区被画成实心白圆，故弃用。
   const mx = W * .74, my = H * .13, mr = 138;
-  ctx.save();
-  ctx.beginPath(); ctx.arc(mx, my, mr, 0, 7); ctx.fillStyle = '#f6e7c8'; ctx.fill();
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.beginPath(); ctx.arc(mx + mr * .42, my - mr * .16, mr * .92, 0, 7); ctx.fill();
-  ctx.restore();
+  const glow = ctx.createRadialGradient(mx, my, mr * .9, mx, my, mr * 2.05);
+  glow.addColorStop(0, 'rgba(246,231,200,.34)'); glow.addColorStop(1, 'rgba(246,231,200,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(mx, my, mr * 2.05, 0, 7); ctx.fill();
+  const mdisc = ctx.createRadialGradient(mx - mr * .34, my - mr * .3, mr * .12, mx, my, mr);
+  mdisc.addColorStop(0, '#fffaf0'); mdisc.addColorStop(.52, '#f6e7c8'); mdisc.addColorStop(1, '#e0cda6');
+  ctx.fillStyle = mdisc;
+  ctx.beginPath(); ctx.arc(mx, my, mr, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(196,178,142,.30)';
+  ctx.beginPath(); ctx.arc(mx - mr * .36, my - mr * .2, mr * .1, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx + mr * .23, my + mr * .19, mr * .075, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx - mr * .14, my + mr * .38, mr * .05, 0, 7); ctx.fill();
   // 邮票
   const sx = 76, sy = 118, sw = 214, sh = 252;
   ctx.save();
