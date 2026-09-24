@@ -695,6 +695,136 @@ function waybillNo(ts){
          String(Math.floor(Math.random() * 9000) + 1000);
 }
 
+/* ---------- PCM 音轨 ----------
+   X5 / QQ浏览器 / 微信里 Web Audio 常年哑火（解锁了也不出声）。
+   兜底：现场算一段 16bit wav，交给 <audio> 元素播——这些内核对 audio 元素
+   的兼容性远高于 Web Audio。数据全部运行时生成，不联网、不占文件体积。   */
+const PCMSnd = (() => {
+  const SR = 22050;
+  const cache = {}, pool = [];
+  let everPlayed = false;
+  const OSC = {
+    sine: p => Math.sin(p),
+    square: p => (Math.sin(p) >= 0 ? 1 : -1),
+    triangle: p => 2 / Math.PI * Math.asin(Math.sin(p))
+  };
+  function biquad(type, f0, Q){
+    const w0 = 2 * Math.PI * f0 / SR, c = Math.cos(w0), s = Math.sin(w0), al = s / (2 * Q);
+    let b0, b1, b2, a0, a1, a2;
+    if(type === 'bp'){ b0 = al; b1 = 0; b2 = -al; }
+    else { b0 = (1 - c) / 2; b1 = 1 - c; b2 = b0; }
+    a0 = 1 + al; a1 = -2 * c; a2 = 1 - al;
+    b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    return x => { const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = x; y2 = y1; y1 = y; return y; };
+  }
+  function tone(g, type, f0, f1, a0, tau, dur, delay){
+    const st = Math.floor((delay || 0) * SR), n = Math.floor(dur * SR);
+    let ph = 0;
+    for(let i = 0; i < n; i++){
+      const idx = st + i; if(idx >= g.length) break;
+      const t = i / SR;
+      const f = f1 ? f0 * Math.pow(f1 / f0, i / n) : f0;
+      ph += 2 * Math.PI * f / SR;
+      g[idx] += OSC[type](ph) * a0 * Math.exp(-t / tau);
+    }
+  }
+  function noise(g, ft, freq, Q, a0, tau, dur, delay, atk){
+    const bp = biquad(ft, freq, Q);
+    const st = Math.floor((delay || 0) * SR), n = Math.floor(dur * SR);
+    for(let i = 0; i < n; i++){
+      const idx = st + i; if(idx >= g.length) break;
+      const t = i / SR;
+      let a = a0 * Math.exp(-t / tau);
+      if(atk) a *= Math.min(1, t / atk);
+      g[idx] += bp(Math.random() * 2 - 1) * a;
+    }
+  }
+  const gen = {
+    silent(g){ for(let i = 0; i < g.length; i++) g[i] = 0.0006 * (i % 2 ? 1 : -1); },
+    tap(g){ tone(g, 'sine', 396, 0, 0.22, 0.10, 0.7); },
+    paper(g){ noise(g, 'bp', 2400, 0.6, 0.55, 0.055, 0.3); },
+    pound(g){
+      tone(g, 'sine', 132, 68, 0.9, 0.085, 0.36);
+      noise(g, 'bp', 1200, 0.8, 0.55, 0.014, 0.07);
+    },
+    whoosh(g){ noise(g, 'lp', 900, 0.7, 0.6, 0.55, 1.6, 0, 0.25); },
+    stamp(g){
+      tone(g, 'square', 186, 118, 0.3, 0.045, 0.2);
+      noise(g, 'bp', 1500, 0.8, 0.55, 0.011, 0.06);
+    },
+    chime(g){
+      tone(g, 'sine', 528.25, 0, 0.42, 0.42, 1.5, 0);
+      tone(g, 'sine', 792.11, 0, 0.42, 0.42, 1.5, 0.12);
+    },
+    dawn(g){
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(g, 'triangle', f, 0, 0.36, 0.28, 1.2, i * 0.22));
+    }
+  };
+  const LEN = { silent:0.05, tap:0.8, paper:0.35, pound:0.48, whoosh:1.7, stamp:0.32, chime:1.7, dawn:1.7 };
+  function toDataUrl(f32, mul){
+    try{
+      const n = f32.length, bytes = 44 + n * 2;
+      const v = new DataView(new ArrayBuffer(bytes));
+      const w = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      w(0,'RIFF'); v.setUint32(4, bytes - 8, true); w(8,'WAVE'); w(12,'fmt ');
+      v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+      v.setUint32(24,SR,true); v.setUint32(28,SR*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+      w(36,'data'); v.setUint32(40, n*2, true);
+      let o = 44;
+      for(let i = 0; i < n; i++){
+        let s = f32[i] * mul; if(s > 1) s = 1; else if(s < -1) s = -1;
+        v.setInt16(o, s * 32767, true); o += 2;
+      }
+      const b = new Uint8Array(v.buffer);
+      let str = '';
+      for(let i = 0; i < b.length; i += 4096) str += String.fromCharCode.apply(null, b.subarray(i, i + 4096));
+      return 'data:audio/wav;base64,' + btoa(str);
+    }catch(e){ return null; }
+  }
+  function url(key, mul){
+    if(cache[key]) return cache[key];
+    if(!gen[key]) return null;
+    const buf = new Float32Array(Math.ceil((LEN[key] || 1) * SR));
+    gen[key](buf);
+    const u = toDataUrl(buf, mul == null ? 0.16 : mul);   // 与 Web Audio 轨的 master 0.16 对齐
+    if(u) cache[key] = u;
+    return u;
+  }
+  function play(u){
+    if(!u) return false;
+    while(pool.length < 6){
+      try{
+        const a = new Audio(); a.preload = 'auto'; a.setAttribute('playsinline', '');
+        pool.push({ el:a, busy:false, t:0 });
+      }catch(e){ break; }
+    }
+    for(let i = 0; i < pool.length; i++){
+      const p = pool[i];
+      if(p.busy) continue;
+      p.busy = true;
+      try{
+        p.el.onended = () => { p.busy = false; };
+        p.el.src = u;
+        p.el.currentTime = 0;
+        const pr = p.el.play();
+        if(pr && pr.then) pr.then(() => { everPlayed = true; }).catch(() => { p.busy = false; });
+        else everPlayed = true;
+      }catch(e){ p.busy = false; continue; }
+      clearTimeout(p.t);
+      p.t = setTimeout(() => { p.busy = false; }, 2200);
+      return true;
+    }
+    return false;
+  }
+  // 预生成最常用的两段，别让第一次点击顿一下
+  function warm(){ try{ url('pound'); url('tap'); }catch(e){} }
+  return { url, play, warm, ok: () => everPlayed };
+})();
+/* 这些内核里 Web Audio 不可靠，直接走 audio 元素音轨 */
+const USE_TAG_TRACK = /MicroMessenger|QQBrowser|MQQBrowser|X5|QQ\/|UCBrowser|baiduboxapp|Weibo|DingTalk/i
+  .test(navigator.userAgent || '');
+
 /* ---------- 音效（Web Audio 程序化合成，音量极轻） ---------- */
 const Sound = (() => {
   let ctx = null, enabled = true, master = null, unlocked = false, htmlDone = false, tries = 0;
@@ -708,31 +838,12 @@ const Sound = (() => {
     }
     return ctx;
   }
-  // 现搓一段 30ms 静音 wav：微信 / iOS 里必须"真的播过一段音频"，音频通道才肯开机
-  let silentUrl = null;
-  function wavUrl(){
-    if(silentUrl) return silentUrl;
-    try{
-      const sr = 8000, n = 240, bytes = 44 + n * 2;
-      const v = new DataView(new ArrayBuffer(bytes));
-      const w = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-      w(0,'RIFF'); v.setUint32(4, bytes - 8, true); w(8,'WAVE'); w(12,'fmt ');
-      v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
-      v.setUint32(24,sr,true); v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
-      w(36,'data'); v.setUint32(40, n*2, true);
-      silentUrl = URL.createObjectURL(new Blob([v.buffer], { type:'audio/wav' }));
-    }catch(e){}
-    return silentUrl;
-  }
+  // 借 <audio> 把音频通道叫醒（X5 / iOS 里这是唯一稳的一招）
   function htmlPing(){
     if(htmlDone) return;
-    try{
-      const a = document.createElement('audio');
-      a.src = wavUrl() || ''; a.preload = 'auto'; a.playsinline = true;
-      const p = a.play();
-      if(p && p.then) p.then(() => { htmlDone = true; }).catch(() => {});
-      setTimeout(() => { try{ a.pause(); a.src = ''; a.remove(); }catch(e){} }, 1000);
-    }catch(e){}
+    htmlDone = true;                       // 只试一次，避免反复抢占播放池
+    if(!PCMSnd.play(PCMSnd.url('silent', 1))) setTimeout(() => { try{ PCMSnd.play(PCMSnd.url('silent', 1)); }catch(e){} }, 400);
+    setTimeout(() => { try{ PCMSnd.warm(); }catch(e){} }, 250);
   }
   // 推一帧静音：X5 / iOS 上 "state 是 running 却不发声" 的经典解法
   function ping(c){
@@ -749,6 +860,8 @@ const Sound = (() => {
     tries++;
     if(c.state !== 'running'){ try{ c.resume(); }catch(e){} }
     ping(c);
+    // 试过两次手势 Web Audio 仍没起来（X5 / 国产内核常见），自动降级到 audio 元素轨
+    if(tries >= 2 && (!ctx || ctx.state !== 'running')) tagMode = true;
     if(c.state === 'running') unlocked = true;
     setTimeout(() => { try{ if(c.state === 'running') unlocked = true; }catch(e){} }, 80);
   }
@@ -894,8 +1007,26 @@ const Sound = (() => {
       o.connect(g).connect(master); o.start(t); o.stop(t + 0.75);
     }catch(e){}
   }
+  const WA = { pound, paper, whoosh, stamp, chime, dawn, tap };
+  // 出声优先：audio 元素音轨在 X5 / QQ / 微信里比 Web Audio 可靠得多
+  let tagMode = USE_TAG_TRACK;
+  function emit(key){
+    if(!enabled) return;
+    if(tagMode){
+      const u = PCMSnd.url(key);
+      if(u && PCMSnd.play(u)) return;
+    }
+    try{ WA[key](); }catch(e){}
+  }
   return {
-    resume, unlock, reWake, pound, paper, whoosh, stamp, chime, dawn, tap,
+    resume, unlock, reWake,
+    pound: () => emit('pound'),
+    paper: () => emit('paper'),
+    whoosh: () => emit('whoosh'),
+    stamp: () => emit('stamp'),
+    chime: () => emit('chime'),
+    dawn: () => emit('dawn'),
+    tap: () => emit('tap'),
     toggle(){
       enabled = !enabled;
       store.set('sound', enabled ? 'on' : 'off');
@@ -903,8 +1034,8 @@ const Sound = (() => {
       return enabled;
     },
     get enabled(){ return enabled; },
-    ready(){ return unlocked && !!ctx && ctx.state === 'running'; },
-    state(){ return ctx ? ctx.state : 'none'; }
+    ready(){ return PCMSnd.ok() || (unlocked && !!ctx && ctx.state === 'running'); },
+    state(){ return (ctx ? ctx.state : 'none') + (USE_TAG_TRACK ? ' | tag轨' : ' | webaudio轨'); }
   };
 })();
 // 微信：要等 JSBridge 就绪才放音频，绑上再解锁一次
@@ -916,6 +1047,43 @@ if(window.wx && typeof window.wx.ready === 'function'){ try{ window.wx.ready(() 
 window.addEventListener('pageshow', () => Sound.unlock());
 document.addEventListener('visibilitychange', () => { if(!document.hidden) Sound.reWake(); });
 window.__snd = { state: () => Sound.state(), ready: () => Sound.ready() };
+
+/* ---------- 音频自检：序章标题「月亮邮局」连点 6 次唤出 ---------- */
+(function(){
+  const title = document.querySelector('#scene-intro .title');
+  if(!title) return;
+  let n = 0, last = 0;
+  title.addEventListener('click', () => {
+    const now = Date.now();
+    n = (now - last < 800) ? n + 1 : 1;
+    last = now;
+    if(n >= 6){ n = 0; diag(); }
+  });
+  function diag(){
+    let box = $('__sndbox');
+    if(!box){
+      box = document.createElement('div'); box.id = '__sndbox';
+      box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));' +
+        'z-index:9999;background:rgba(8,14,24,.95);border:1px solid rgba(240,196,105,.45);border-radius:12px;' +
+        'padding:14px 16px;color:#dfe8f5;font:12px/1.9 system-ui,-apple-system,sans-serif';
+      document.body.appendChild(box);
+    }
+    box.innerHTML =
+      '<div style="color:#f0c469;letter-spacing:.16em;margin-bottom:6px">音 频 自 检</div>' +
+      '出声轨道：<b>' + (USE_TAG_TRACK ? 'audio 元素（X5 兜底轨）' : 'Web Audio') + '</b><br>' +
+      'AudioContext：<b>' + Sound.state() + '</b><br>' +
+      'audio 轨成功播过：<b>' + (PCMSnd.ok() ? '是' : '否') + '</b><br>' +
+      '声音开关：<b>' + (Sound.enabled ? '开' : '关 —— 去点右上角喇叭') + '</b><br>' +
+      '<div style="opacity:.55;margin-top:6px;font-size:11px;word-break:break-all">' +
+      (navigator.userAgent || '').slice(0, 130) + '</div>' +
+      '<div id="__sndtry" style="margin-top:10px;padding:10px 0;text-align:center;' +
+      'border:1px solid rgba(240,196,105,.5);border-radius:8px;color:#f0c469;letter-spacing:.1em">点 这 里 试 听 杵 声</div>' +
+      '<div id="__sndclose" style="margin-top:8px;text-align:right;opacity:.5">关闭</div>';
+    box.querySelector('#__sndtry').onclick = () => Sound.pound();
+    box.querySelector('#__sndclose').onclick = () => box.remove();
+  }
+  window.__diag = diag;
+})();
 
 /* ---------- 星空 ---------- */
 (function buildStars(){
